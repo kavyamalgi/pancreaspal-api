@@ -4,14 +4,14 @@ from typing import List, Dict, Any, Optional
 
 # LangChain + FAISS imports
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, GoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
-from langchain.schema import Document
 
 # --- Constants ---
 VECTOR_DB_PATH = "faiss_diseases_db"
 EMBEDDING_MODEL_NAME = "models/embedding-001"
-LLM_MODEL_NAME = "gemini-1.5-flash-latest"
+LLM_MODEL_NAME = "claude-3-5-sonnet-latest"
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -22,9 +22,14 @@ class RAGService:
     Encapsulates the core Retrieval-Augmented Generation logic.
     """
     def __init__(self):
-        self.api_key = os.getenv("GOOGLE_API_KEY")
-        if not self.api_key:
+        self.google_api_key = os.getenv("GOOGLE_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
+        if not self.google_api_key:
             raise ValueError("GOOGLE_API_KEY not found. Please ensure it's in your .env file.")
+
+        if not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY not found. Please ensure it's in your .env file.")
 
         logging.info("Initializing RAG Service...")
         self.embeddings = self._initialize_embeddings()
@@ -34,14 +39,24 @@ class RAGService:
         logging.info("RAG Service Initialized Successfully.")
 
     def _initialize_embeddings(self) -> GoogleGenerativeAIEmbeddings:
-        return GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL_NAME, google_api_key=self.api_key)
+        return GoogleGenerativeAIEmbeddings(
+            model=EMBEDDING_MODEL_NAME,
+            google_api_key=self.google_api_key
+        )
 
-    def _initialize_llm(self) -> GoogleGenerativeAI:
-        return GoogleGenerativeAI(model=LLM_MODEL_NAME, google_api_key=self.api_key, temperature=0.2)
+    def _initialize_llm(self) -> ChatAnthropic:
+        return ChatAnthropic(
+            model=LLM_MODEL_NAME,
+            anthropic_api_key=self.anthropic_api_key,
+            temperature=0.2,
+            max_tokens=1024
+        )
 
     def _load_vector_db(self) -> FAISS:
         if not os.path.exists(VECTOR_DB_PATH):
-            raise FileNotFoundError(f"Vector DB not found at '{VECTOR_DB_PATH}'. Make sure this file is in your project directory.")
+            raise FileNotFoundError(
+                f"Vector DB not found at '{VECTOR_DB_PATH}'. Make sure this file is in your project directory."
+            )
 
         logging.info(f"Loading vector DB from {VECTOR_DB_PATH}...")
         return FAISS.load_local(
@@ -51,7 +66,7 @@ class RAGService:
         )
 
     def _create_rag_chain(self) -> Optional[RetrievalQA]:
-        retriever = self.vector_db.as_retriever(search_kwargs={'k': 5})
+        retriever = self.vector_db.as_retriever(search_kwargs={"k": 5})
         return RetrievalQA.from_chain_type(
             llm=self.llm,
             chain_type="stuff",
