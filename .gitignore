@@ -1,9 +1,7 @@
 # In .gitignore file
-.env
 venv/
-.vscode/
 __pycache__/
-patient_files/
-gold_standard_docs/
-Gold_Standard.zip
+.env
 faiss_diseases_db/
+*.pyc
+.DS_Store

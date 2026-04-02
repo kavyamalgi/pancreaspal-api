@@ -2,31 +2,21 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 
-# LangChain + FAISS imports
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
 
-# --- Constants ---
 VECTOR_DB_PATH = "faiss_diseases_db"
-EMBEDDING_MODEL_NAME = "models/embedding-001"
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL_NAME = "claude-3-5-sonnet-latest"
 
-# Configure basic logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class RAGService:
-    """
-    Encapsulates the core Retrieval-Augmented Generation logic.
-    """
     def __init__(self):
-        self.google_api_key = os.getenv("GOOGLE_API_KEY")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-
-        if not self.google_api_key:
-            raise ValueError("GOOGLE_API_KEY not found. Please ensure it's in your .env file.")
 
         if not self.anthropic_api_key:
             raise ValueError("ANTHROPIC_API_KEY not found. Please ensure it's in your .env file.")
@@ -38,11 +28,8 @@ class RAGService:
         self.rag_chain = self._create_rag_chain()
         logging.info("RAG Service Initialized Successfully.")
 
-    def _initialize_embeddings(self) -> GoogleGenerativeAIEmbeddings:
-        return GoogleGenerativeAIEmbeddings(
-            model=EMBEDDING_MODEL_NAME,
-            google_api_key=self.google_api_key
-        )
+    def _initialize_embeddings(self):
+        return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
     def _initialize_llm(self) -> ChatAnthropic:
         return ChatAnthropic(
@@ -55,7 +42,7 @@ class RAGService:
     def _load_vector_db(self) -> FAISS:
         if not os.path.exists(VECTOR_DB_PATH):
             raise FileNotFoundError(
-                f"Vector DB not found at '{VECTOR_DB_PATH}'. Make sure this file is in your project directory."
+                f"Vector DB not found at '{VECTOR_DB_PATH}'. Run build_db.py first."
             )
 
         logging.info(f"Loading vector DB from {VECTOR_DB_PATH}...")
@@ -75,18 +62,15 @@ class RAGService:
         )
 
     def process_query(self, patient_history: str, conversation_history: List[str], query: str) -> Dict[str, Any]:
-        """
-        Processes a query using the full RAG pipeline.
-        """
         if not self.rag_chain:
             return {"error": "RAG chain not initialized."}
 
         formatted_history = "\n".join(conversation_history)
         structured_query = (
-            f"**Static Patient History:**\n{patient_history}\n\n"
-            f"**Ongoing Conversation History:**\n{formatted_history}\n\n"
-            f"**Clinician's Latest Request:**\n{query}\n\n"
-            f"**Task:**\nBased on ALL the information, provide a concise and clinically relevant answer."
+            f"Static Patient History:\n{patient_history}\n\n"
+            f"Ongoing Conversation History:\n{formatted_history}\n\n"
+            f"Clinician's Latest Request:\n{query}\n\n"
+            f"Task:\nBased on all the information, provide a concise and clinically relevant answer."
         )
 
         try:
