@@ -4,4 +4,4 @@ __pycache__/
 .env
 faiss_diseases_db/
 *.pyc
-.DS_Store
+.DS_Storetouch .env

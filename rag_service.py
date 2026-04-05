@@ -9,7 +9,7 @@ from langchain.chains import RetrievalQA
 
 VECTOR_DB_PATH = "faiss_diseases_db"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL_NAME = "claude-3-5-sonnet-latest"
+LLM_MODEL_NAME = "claude-sonnet-4-6"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -60,6 +60,20 @@ class RAGService:
             retriever=retriever,
             return_source_documents=True
         )
+    def format_output(self, raw_user_answer):
+        """
+        Uses the LLM to reformat the raw answer into a simpler format.
+        """
+
+        prompts_for_formatting = (
+            "Take this raw_user_answer and organize it in an easy to read format "
+            "at a 6th grade level.\n\n"
+            f"raw_user_answer:\n{raw_user_answer}"
+        )
+
+        formatted_response = self.llm.invoke(prompts_for_formatting)
+
+        return formatted_response.content
 
     def process_query(self, patient_history: str, conversation_history: List[str], query: str) -> Dict[str, Any]:
         if not self.rag_chain:
@@ -86,10 +100,14 @@ class RAGService:
                     "title": meta.get("title", meta.get("doc_id"))
                 })
 
+            raw_answer = raw_outputs.get("result", "")
+            formatted_answer = self.format_output(raw_answer)
+
             return {
-                "answer": raw_outputs.get("result", ""),
+                "answer": formatted_answer,
                 "sources": sources
             }
+        
         except Exception as e:
             logging.error(f"RAG chain invocation failed: {e}")
             return {"error": f"Failed to process query: {e}"}
