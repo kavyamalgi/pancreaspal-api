@@ -1,7 +1,7 @@
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 import uuid
-import io
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,9 +11,21 @@ from patient_service import PatientService
 
 # Initialize the FastAPI app and services
 app = FastAPI(
-    title="Heal.ai",
+    title="Pancreas Pal",
     description="An AI-powered clinical co-pilot featuring PDF uploads and conversation memory.",
     version="3.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",      # Development
+        "http://localhost:8000",      # Vite dev server
+        "https://yourdomain.com",     # Production domain
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 try:
@@ -54,12 +66,12 @@ class AppendHistoryResponse(BaseModel):
 def read_root():
     return {"status": "Medical RAG API is running."}
 
-@app.post("/api/v1/patients/upload", response_model=PDFUploadResponse)
+@app.post("/api/v1/patients/upload")
 async def upload_patient_pdf(file: UploadFile = File(...)):
-    """
-    Uploads a patient's PDF, extracts the text, and saves it as a .txt file.
-    """
-    if file.content_type != "application/pdf":
+    """Upload PDF"""
+    is_pdf_content_type = file.content_type in ("application/pdf", "application/octet-stream", "")
+    is_pdf_filename = file.filename and file.filename.lower().endswith(".pdf")
+    if not is_pdf_content_type and not is_pdf_filename:
         raise HTTPException(status_code=400, detail="Invalid file type. Please upload a PDF.")
 
     patient_id = str(uuid.uuid4())
@@ -67,13 +79,14 @@ async def upload_patient_pdf(file: UploadFile = File(...)):
 
     success = patient_service.save_pdf_as_text(patient_id, file_content)
     if not success:
-        raise HTTPException(status_code=500, detail="Failed to process and save the uploaded PDF.")
+        raise HTTPException(status_code=500, detail="Failed to process PDF")
 
     return {
         "patient_id": patient_id,
         "filename": file.filename,
-        "info": f"File processed and saved as text. Use the patient_id for queries."
+        "info": f"File processed. Use the patient_id for queries."
     }
+
 
 @app.post("/api/v1/patients/{patient_id}/append", response_model=AppendHistoryResponse)
 async def append_to_history(patient_id: str, request: AppendHistoryRequest):
@@ -89,11 +102,9 @@ async def append_to_history(patient_id: str, request: AppendHistoryRequest):
         "info": "The patient's history has been successfully updated."
     }
 
-@app.post("/api/v1/patients/{patient_id}/query", response_model=RAGQueryResponse)
+@app.post("/api/v1/patients/{patient_id}/query")
 async def query_patient_agent(patient_id: str, request: PatientQueryRequest):
-    """
-    Queries the agent about a specific patient, using conversation memory.
-    """
+    """Query patient agent"""
     patient_history = patient_service.get_patient_history_text(patient_id)
     if patient_history is None:
         raise HTTPException(status_code=404, detail=f"Patient with ID '{patient_id}' not found.")

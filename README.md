@@ -1,108 +1,236 @@
-PancreasPal API
+# PancreasPal API
 
-PancreasPal is an AI-powered clinical support assistant designed to help newly diagnosed Type 1 diabetes patients and medical professionals by providing evidence-based, context-aware responses using patient data and trusted medical literature.
+PancreasPal is an AI-powered clinical support assistant for newly diagnosed Type 1 diabetes patients and healthcare professionals. It combines patient-specific PDF history uploads, conversation memory, and Retrieval-Augmented Generation (RAG) with trusted clinical sources.
 
-This API supports:
+## Project Structure
 
-📄 PDF uploads for patient history
-🧠 Conversation memory per patient
-🔍 Retrieval-Augmented Generation (RAG) for grounded medical responses
-🚀 Getting Started
+- `main.py` - FastAPI backend application entry point
+- `build_db.py` - Builds local FAISS vector database from `Gold_Standard.zip`
+- `rag_service.py` - RAG service using LangChain, FAISS, and Anthropic Claude
+- `patient_service.py` - PDF ingestion, patient history storage, and conversation memory
+- `requirements.txt` - Backend Python dependencies
+- `pancreaspal-ui/` - React frontend application
+- `patient_files/` - Generated patient history text files
+- `faiss_diseases_db/` - Built FAISS vector database
+- `gold_standard_docs/` - Extracted medical source documents
 
-These instructions will help you run PancreasPal locally for development and research.
+## Requirements
 
-📋 Prerequisites
-Python 3.10+
-An Anthropic API key (Claude)
-⚙️ Installation
-1. Clone the Repository
-git clone https://github.com/your-username/pancreaspal-api.git
-cd pancreaspal-api
-2. Create and Activate Virtual Environment
-python3 -m venv venv
-source venv/bin/activate
-3. Install Dependencies
+- Python 3.12
+- Node.js 16+ (for frontend)
+- npm or yarn
+- Anthropic API key stored in `ANTHROPIC_API_KEY`
+
+## Backend Setup
+
+### 1. Create and activate a Python virtual environment
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+On macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Install backend dependencies
+
+```bash
 pip install -r requirements.txt
-🔐 Environment Setup
+```
 
-Create a .env file in the root directory:
+### 3. Configure environment variables
 
-echo 'ANTHROPIC_API_KEY="your-anthropic-api-key-here"' > .env
-📂 Add Your Data
+Create a `.env` file in the repository root with:
 
-Place your dataset (e.g., Gold_Standard.zip) in the root directory.
+```env
+ANTHROPIC_API_KEY=your-anthropic-api-key-here
+```
 
-This dataset should contain:
+### 4. Prepare the medical source data
 
-Medical textbooks
-Research papers
-Verified diabetes-related documents
-🧠 Build Vector Database
+The backend uses a local FAISS database built from `Gold_Standard.zip`.
 
-Run:
+Place `Gold_Standard.zip` in the repository root if it is not already present.
 
+### 5. Build the FAISS vector database
+
+```bash
 python build_db.py
+```
 
-This step:
+This script will:
 
-Extracts your documents
-Converts PDFs → text
-Splits into chunks
-Generates embeddings (local HuggingFace model)
-Stores them in FAISS
+- unzip `Gold_Standard.zip` into `gold_standard_docs/`
+- read each PDF file
+- split document text into chunks
+- generate embeddings using `sentence-transformers/all-MiniLM-L6-v2`
+- save the FAISS database to `faiss_diseases_db/`
 
-You should see a folder created:
+> If `faiss_diseases_db/` already exists and is valid, you can skip this step.
 
-faiss_diseases_db/
-▶️ Running the Application
+## Running the Backend
 
-Start the FastAPI server:
+Start the FastAPI server with:
 
-python -m uvicorn main:app --reload
+```bash
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
 
-Server runs at:
+The backend will be available at:
 
-http://127.0.0.1:8000
-📡 API Endpoints
-Health Check
+`http://127.0.0.1:8000`
+
+## Frontend Setup
+
+The React UI lives in `pancreaspal-ui/`.
+
+### 1. Install frontend dependencies
+
+```bash
+cd pancreaspal-ui
+npm install
+```
+
+### 2. Configure frontend environment
+
+Create a `.env.local` file inside `pancreaspal-ui/`:
+
+```env
+VITE_API_URL=http://localhost:8000
+VITE_APP_NAME=PancreasPal
+```
+
+### 3. Start the frontend
+
+```bash
+npm run dev
+```
+
+The UI will usually run at `http://localhost:3000`.
+
+## Backend API Endpoints
+
+### Health check
+
+```http
 GET /
-Upload Patient PDF
+```
+
+Response:
+
+```json
+{ "status": "Medical RAG API is running." }
+```
+
+### Upload patient PDF
+
+```http
 POST /api/v1/patients/upload
-Append to Patient History
+Content-Type: multipart/form-data
+```
+
+Form field:
+
+- `file` - a PDF document containing patient history
+
+Response:
+
+```json
+{
+  "patient_id": "<uuid>",
+  "filename": "file.pdf",
+  "info": "File processed. Use the patient_id for queries."
+}
+```
+
+### Append patient history
+
+```http
 POST /api/v1/patients/{patient_id}/append
-Query Patient (RAG)
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{ "text": "New clinical note or follow-up information." }
+```
+
+### Query patient agent
+
+```http
 POST /api/v1/patients/{patient_id}/query
-🧠 Model Architecture
-LLM: Claude (Anthropic)
-Embeddings: sentence-transformers/all-MiniLM-L6-v2
-Vector Store: FAISS
-Framework: FastAPI + LangChain
-🔄 System Workflow
-Upload patient PDF → stored as text
-Medical dataset → embedded + stored in FAISS
-Query includes:
-Patient history
-Conversation memory
-Retrieved medical context
-Claude generates grounded response
-⚠️ Important Notes
-You must run build_db.py before starting the API
-Ensure Gold_Standard.zip is in the root directory
-Ensure .env contains your Anthropic API key
-If FAISS DB is missing, the app will fail on startup
-🧪 Testing the System
+Content-Type: application/json
+```
 
-You can test quickly with:
+Body:
 
+```json
+{ "query": "What is the best insulin dosing strategy for this patient?" }
+```
+
+Response example:
+
+```json
+{
+  "answer": "...",
+  "sources": [
+    { "source": "...", "url": null, "title": "..." }
+  ]
+}
+```
+
+## How it works
+
+1. Upload a patient PDF.
+2. The backend extracts text and saves it to `patient_files/<patient_id>.txt`.
+3. The RAG service loads the FAISS vector store from `faiss_diseases_db/`.
+4. A query combines patient history, conversation memory, and retrieved medical context.
+5. Anthropic Claude generates the final answer.
+
+## Notes and Troubleshooting
+
+- `ANTHROPIC_API_KEY` must be present in `.env` before starting the backend.
+- `faiss_diseases_db/` must exist before starting the API, or `main.py` will fail.
+- If `build_db.py` cannot find `Gold_Standard.zip`, place it in the repository root.
+- Check CORS settings in `main.py` if the frontend cannot connect.
+
+## Quick test
+
+With the backend running:
+
+```bash
 curl http://127.0.0.1:8000/
+```
 
-Expected response:
+Expected output:
 
-{"status": "Medical RAG API is running."}
-🛠 Tech Stack
-Python
-FastAPI
-LangChain
-FAISS
-Sentence Transformers
-Claude (Anthropic API)
+```json
+{"status":"Medical RAG API is running."}
+```
+
+## Development notes
+
+- Backend: `FastAPI`, `LangChain`, `FAISS`, `Anthropic Claude`
+- Embeddings model: `sentence-transformers/all-MiniLM-L6-v2`
+- Frontend: React + Vite + Tailwind CSS
+
+## Useful directories
+
+- `patient_files/` - saved patient text history
+- `faiss_diseases_db/` - stored vector DB used by RAG
+- `gold_standard_docs/` - extracted PDFs from `Gold_Standard.zip`
+- `pancreaspal-ui/` - frontend application
+
+---
+
+## License
+
+This project is provided without an explicit license. Add a license file if you plan to share or distribute it.

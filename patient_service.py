@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 import pypdf
 import io
@@ -23,8 +24,10 @@ class PatientService:
             file_path = PATIENT_FILES_DIR / f"{patient_id}.txt"
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(text)
+            print(f"Successfully processed PDF for patient {patient_id}, text length: {len(text)}")
             return True
-        except Exception:
+        except Exception as e:
+            print(f"Failed to process PDF for patient {patient_id}: {e}")
             return False
 
     def get_patient_history_text(self, patient_id: str) -> str | None:
@@ -45,14 +48,17 @@ class PatientService:
             f.write(f"\n\n--- Appended Note ---\n{new_text}")
         return True
 
-    def get_conversation_history(self, patient_id: str) -> list[str]:
-        """Retrieves the conversation history for a patient."""
+    def get_conversation_history(self, patient_id: str):
+        """Retrieve conversation history for a patient"""
         return conversation_histories.get(patient_id, [])
 
-    def add_to_conversation_history(self, patient_id: str, user_query: str, agent_answer: str):
-        """Adds a new turn to the conversation history."""
+    def add_to_conversation_history(self, patient_id: str, user_query: str, agent_response: str):
+        """Add a message pair to the conversation history"""
         if patient_id not in conversation_histories:
             conversation_histories[patient_id] = []
-
-        conversation_histories[patient_id].append(f"User: {user_query}")
-        conversation_histories[patient_id].append(f"Agent: {agent_answer}")
+        
+        conversation_histories[patient_id].append({
+            "user_query": user_query,
+            "agent_response": agent_response,
+            "timestamp": datetime.now().isoformat()
+        })

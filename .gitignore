@@ -5,3 +5,7 @@ __pycache__/
 faiss_diseases_db/
 *.pyc
 .DS_Storetouch .env
+Gold_Standard.zip
+gold_standard_docs
+.venv/
+patient_files/

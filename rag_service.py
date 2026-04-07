@@ -79,7 +79,10 @@ class RAGService:
         if not self.rag_chain:
             return {"error": "RAG chain not initialized."}
 
-        formatted_history = "\n".join(conversation_history)
+        formatted_history = "\n".join(
+            f"User: {turn['user_query']}\nAssistant: {turn['agent_response']}"
+            for turn in conversation_history
+        )
         structured_query = (
             f"Static Patient History:\n{patient_history}\n\n"
             f"Ongoing Conversation History:\n{formatted_history}\n\n"
