@@ -67,7 +67,8 @@ class RAGService:
 
         prompts_for_formatting = (
             "Take this raw_user_answer and organize it in an easy to read format "
-            "at a 6th grade level.\n\n"
+            "at a 6th grade level without emojis. Address the user directly and " 
+            "do not use third person pronouns.\n\n"
             f"raw_user_answer:\n{raw_user_answer}"
         )
 
