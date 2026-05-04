@@ -11,13 +11,16 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from dotenv import load_dotenv
 
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 ZIP_FILE_NAME = "Gold_Standard.zip"
 EXTRACT_TO_DIRECTORY = "gold_standard_docs"
 VECTOR_DB_PATH = "faiss_diseases_db"
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL_NAME = "NeuML/pubmedbert-base-embeddings"
 
 
 def unzip_local_file(zip_filename, extract_dir):
@@ -63,11 +66,28 @@ def main():
         return
 
     logging.info("Initializing embedding model...")
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    embeddings = HuggingFaceEmbeddings(
+        model_name="NeuML/pubmedbert-base-embeddings"
+    )
 
-    logging.info(f"Splitting {len(docs)} documents into chunks...")
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+
+    #logging.info(f"Splitting {len(docs)} documents into chunks...")
+    #splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+    #chunks = splitter.split_documents(docs)
+
+
+    splitter = SemanticChunker(
+        embeddings=embeddings,
+        breakpoint_threshold_type="percentile",
+        breakpoint_threshold_amount=95
+    )
+
     chunks = splitter.split_documents(docs)
+
+    logging.info(f"Creating FAISS database from {len(chunks)} chunks...")
+    db = FAISS.from_documents(chunks, embeddings)
+    db.save_local(VECTOR_DB_PATH)
+
 
     logging.info(f"Creating FAISS database from {len(chunks)} chunks...")
     db = FAISS.from_documents(chunks, embeddings)

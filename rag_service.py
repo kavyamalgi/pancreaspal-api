@@ -8,7 +8,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
 
 VECTOR_DB_PATH = "faiss_diseases_db"
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL_NAME = "NeuML/pubmedbert-base-embeddings"
 LLM_MODEL_NAME = "claude-sonnet-4-6"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -60,6 +60,39 @@ class RAGService:
             retriever=retriever,
             return_source_documents=True
         )
+    
+
+
+    def _get_filtered_docs(self, query: str):
+        docs_and_scores = self.vector_db.similarity_search_with_score(query, k=10)
+
+        print("\n🔍 RAW RETRIEVAL RESULTS:")
+        for i, (doc, score) in enumerate(docs_and_scores):
+            print("hello")
+            print(f"\n--- Candidate {i+1} | Score: {score} ---")
+            print(doc.page_content[:500])
+            print("last line")
+            print("Metadata:", doc.metadata)
+
+        # For FAISS L2 distance, LOWER score is usually better
+        threshold = 1.0
+
+        filtered_docs = [
+            doc for doc, score in docs_and_scores
+            if score <= threshold
+        ]
+
+        top_docs = filtered_docs[:3]
+
+        print("\n✅ FINAL CHUNKS SENT TO LLM:")
+        for i, doc in enumerate(top_docs):
+            print(f"\n--- Final Chunk {i+1} ---")
+            print(doc.page_content[:500])
+            print("Metadata:", doc.metadata)
+
+        return top_docs
+    
+
     def format_output(self, raw_user_answer):
         """
         Uses the LLM to reformat the raw answer into a simpler format.
@@ -93,8 +126,39 @@ class RAGService:
 
         try:
             logging.info("Invoking RAG chain...")
-            raw_outputs = self.rag_chain.invoke({"query": structured_query})
+            #raw_outputs = self.rag_chain.invoke({"query": structured_query})
+            docs = self._get_filtered_docs(structured_query)
 
+            context = "\n\n".join([doc.page_content for doc in docs])
+
+            response = self.llm.invoke(
+                f"""
+            Use ONLY the context below to answer the user's question.
+
+            Context:
+            {context}
+
+            Question:
+            {structured_query}
+            """
+            )
+
+            return {
+                "answer": response.content,
+                "debug_chunks": [
+                    {
+                        "content": doc.page_content,
+                        "source": doc.metadata.get("source"),
+                        "page": doc.metadata.get("page")
+                    }
+                    for doc in docs
+                ]
+            }
+
+            
+            
+              
+            
             sources = []
             for doc in raw_outputs.get("source_documents", []):
                 meta = doc.metadata

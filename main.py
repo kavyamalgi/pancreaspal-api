@@ -111,6 +111,10 @@ async def query_patient_agent(patient_id: str, request: PatientQueryRequest):
 
     conversation_history = patient_service.get_conversation_history(patient_id)
 
+    #print(patient_history)
+    #print(conversation_history)
+    #print(request.query)
+
     result = rag_service.process_query(
         patient_history=patient_history,
         conversation_history=conversation_history,
