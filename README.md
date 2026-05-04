@@ -70,7 +70,7 @@ This script will:
 - unzip `Gold_Standard.zip` into `gold_standard_docs/`
 - read each PDF file
 - split document text into chunks
-- generate embeddings using `sentence-transformers/all-MiniLM-L6-v2`
+- generate embeddings using `NeuML/pubmedbert-base-embeddings`
 - save the FAISS database to `faiss_diseases_db/`
 
 > If `faiss_diseases_db/` already exists and is valid, you can skip this step.
@@ -80,7 +80,7 @@ This script will:
 Start the FastAPI server with:
 
 ```bash
-python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The backend will be available at:
@@ -219,7 +219,7 @@ Expected output:
 ## Development notes
 
 - Backend: `FastAPI`, `LangChain`, `FAISS`, `Anthropic Claude`
-- Embeddings model: `sentence-transformers/all-MiniLM-L6-v2`
+- Embeddings model: `NeuML/pubmedbert-base-embeddings`
 - Frontend: React + Vite + Tailwind CSS
 
 ## Useful directories
@@ -234,3 +234,7 @@ Expected output:
 ## License
 
 This project is provided without an explicit license. Add a license file if you plan to share or distribute it.
+
+## front end
+'cd pancreaspal-ui/'
+'npm run dev'
