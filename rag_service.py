@@ -1,25 +1,53 @@
 import os
 import logging
+import requests
 from typing import List, Dict, Any, Optional
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_anthropic import ChatAnthropic
+from langchain.llms.base import LLM  # add this
 from langchain.chains import RetrievalQA
 
 VECTOR_DB_PATH = "faiss_diseases_db"
 EMBEDDING_MODEL_NAME = "NeuML/pubmedbert-base-embeddings"
-LLM_MODEL_NAME = "claude-sonnet-4-6"
+LLM_MODEL_NAME = "@bedrock-aws-longhornbuilds/global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+# Add this class before RAGService
+class PortkeyAnthropic(LLM):
+    portkey_api_key: str
+    model: str
+    temperature: float = 0.2
+    max_tokens: int = 1024
+
+    @property
+    def _llm_type(self) -> str:
+        return "portkey-anthropic"
+
+    def _call(self, prompt: str, stop=None, **kwargs) -> str:
+        response = requests.post(
+            "https://api.portkey.ai/v1/messages",
+            headers={
+                "content-type": "application/json",
+                "x-portkey-api-key": self.portkey_api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": self.model,
+                "max_tokens": self.max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        )
+        response.raise_for_status()
+        return response.json()["content"][0]["text"]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class RAGService:
     def __init__(self):
-        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-
-        if not self.anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found. Please ensure it's in your .env file.")
+        self.portkey_api_key = os.getenv("PORTKEY_API_KEY")
+        if not self.portkey_api_key:
+            raise ValueError("PORTKEY_API_KEY not found. Please ensure it's in your .env file.")
 
         logging.info("Initializing RAG Service...")
         self.embeddings = self._initialize_embeddings()
@@ -31,10 +59,10 @@ class RAGService:
     def _initialize_embeddings(self):
         return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
-    def _initialize_llm(self) -> ChatAnthropic:
-        return ChatAnthropic(
+    def _initialize_llm(self) -> PortkeyAnthropic:
+        return PortkeyAnthropic(
+            portkey_api_key=self.portkey_api_key,
             model=LLM_MODEL_NAME,
-            anthropic_api_key=self.anthropic_api_key,
             temperature=0.2,
             max_tokens=1024
         )
@@ -60,13 +88,13 @@ class RAGService:
             retriever=retriever,
             return_source_documents=True
         )
-    
+
 
 
     def _get_filtered_docs(self, query: str):
         docs_and_scores = self.vector_db.similarity_search_with_score(query, k=10)
 
-        print("\n🔍 RAW RETRIEVAL RESULTS:")
+        print("\n:mag: RAW RETRIEVAL RESULTS:")
         for i, (doc, score) in enumerate(docs_and_scores):
             print("hello")
             print(f"\n--- Candidate {i+1} | Score: {score} ---")
@@ -84,14 +112,14 @@ class RAGService:
 
         top_docs = filtered_docs[:3]
 
-        print("\n✅ FINAL CHUNKS SENT TO LLM:")
+        print("\n:white_check_mark: FINAL CHUNKS SENT TO LLM:")
         for i, doc in enumerate(top_docs):
             print(f"\n--- Final Chunk {i+1} ---")
             print(doc.page_content[:500])
             print("Metadata:", doc.metadata)
 
         return top_docs
-    
+
 
     def format_output(self, raw_user_answer):
         """
@@ -100,14 +128,14 @@ class RAGService:
 
         prompts_for_formatting = (
             "Take this raw_user_answer and organize it in an easy to read format "
-            "at a 6th grade level without emojis. Address the user directly and " 
+            "at a 6th grade level without emojis. Address the user directly and "
             "do not use third person pronouns.\n\n"
             f"raw_user_answer:\n{raw_user_answer}"
         )
 
         formatted_response = self.llm.invoke(prompts_for_formatting)
 
-        return formatted_response.content
+        return formatted_response
 
     def process_query(self, patient_history: str, conversation_history: List[str], query: str) -> Dict[str, Any]:
         if not self.rag_chain:
@@ -144,7 +172,7 @@ class RAGService:
             )
 
             return {
-                "answer": response.content,
+                "answer": response,
                 "debug_chunks": [
                     {
                         "content": doc.page_content,
@@ -155,10 +183,10 @@ class RAGService:
                 ]
             }
 
-            
-            
-              
-            
+
+
+
+
             sources = []
             for doc in raw_outputs.get("source_documents", []):
                 meta = doc.metadata
@@ -175,7 +203,7 @@ class RAGService:
                 "answer": formatted_answer,
                 "sources": sources
             }
-        
+
         except Exception as e:
             logging.error(f"RAG chain invocation failed: {e}")
             return {"error": f"Failed to process query: {e}"}
