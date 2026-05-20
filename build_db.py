@@ -6,7 +6,7 @@ from pypdf import PdfReader
 
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 from dotenv import load_dotenv
@@ -67,7 +67,7 @@ def main():
 
     logging.info("Initializing embedding model...")
     embeddings = HuggingFaceEmbeddings(
-        model_name="NeuML/pubmedbert-base-embeddings"
+        model_name=EMBEDDING_MODEL_NAME,
     )
 
 

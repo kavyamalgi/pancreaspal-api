@@ -115,6 +115,29 @@ npm run dev
 
 The UI will usually run at `http://localhost:3000`.
 
+## Quick Setup
+
+If you need to remake the `faiss_dieases_db` database:
+
+```bash
+python3 build_db.py
+```
+
+If you have already set up the database and configured the local environment, run these commands in a terminal to quickly setup the website:
+
+This starts the backend:
+
+```bash
+python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open a new terminal while keeping the old one running, then run these in the new terminal:
+
+```bash
+cd pancreaspal-ui
+npm run dev
+```
+
 ## Backend API Endpoints
 
 ### Health check
