@@ -1,209 +1,178 @@
-import os
+import hashlib
 import logging
-import requests
-from typing import List, Dict, Any, Optional
+import os
+from typing import Any, Dict, List, Optional
 
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.llms.base import LLM  # add this
-from langchain.chains import RetrievalQA
-
-VECTOR_DB_PATH = "faiss_diseases_db"
-EMBEDDING_MODEL_NAME = "NeuML/pubmedbert-base-embeddings"
-LLM_MODEL_NAME = "@bedrock-aws-longhornbuilds/global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-
-# Add this class before RAGService
-class PortkeyAnthropic(LLM):
-    portkey_api_key: str
-    model: str
-    temperature: float = 0.2
-    max_tokens: int = 1024
-
-    @property
-    def _llm_type(self) -> str:
-        return "portkey-anthropic"
-
-    def _call(self, prompt: str, stop=None, **kwargs) -> str:
-        response = requests.post(
-            "https://api.portkey.ai/v1/messages",
-            headers={
-                "content-type": "application/json",
-                "x-portkey-api-key": self.portkey_api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        )
-        response.raise_for_status()
-        return response.json()["content"][0]["text"]
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+RETRIEVE_RESULT_COUNT = 5
+NO_CONTEXT_ANSWER = (
+    "I do not have enough information in the medical library to answer that. "
+    "Please ask a question covered by the Gold Standard sources, or add more detail."
+)
+
+GENERATION_INSTRUCTIONS = (
+    "You are a clinical support assistant for people with Type 1 diabetes and the clinicians "
+    "who care for them. Use ONLY the medical library context below to answer. If the context "
+    "does not contain the answer, say so. Organize the response in an easy-to-read format at a "
+    "6th grade reading level without emojis. Address the user directly. Do not use third-person "
+    "pronouns for the user. Do not invent sources or clinical facts that are not in the context."
+)
 
 
 class RAGService:
     def __init__(self):
-        self.portkey_api_key = os.getenv("PORTKEY_API_KEY")
-        if not self.portkey_api_key:
-            raise ValueError("PORTKEY_API_KEY not found. Please ensure it's in your .env file.")
+        self.region = os.getenv("AWS_REGION", "us-east-1")
+        self.knowledge_base_id = os.getenv("BEDROCK_KNOWLEDGE_BASE_ID", "").strip()
+        self.model_id = os.getenv("BEDROCK_MODEL_ID", "").strip()
 
-        logging.info("Initializing RAG Service...")
-        self.embeddings = self._initialize_embeddings()
-        self.vector_db = self._load_vector_db()
-        self.llm = self._initialize_llm()
-        self.rag_chain = self._create_rag_chain()
-        logging.info("RAG Service Initialized Successfully.")
-
-    def _initialize_embeddings(self):
-        return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-
-    def _initialize_llm(self) -> PortkeyAnthropic:
-        return PortkeyAnthropic(
-            portkey_api_key=self.portkey_api_key,
-            model=LLM_MODEL_NAME,
-            temperature=0.2,
-            max_tokens=1024
-        )
-
-    def _load_vector_db(self) -> FAISS:
-        if not os.path.exists(VECTOR_DB_PATH):
-            raise FileNotFoundError(
-                f"Vector DB not found at '{VECTOR_DB_PATH}'. Run build_db.py first."
+        missing = []
+        if not self.knowledge_base_id:
+            missing.append("BEDROCK_KNOWLEDGE_BASE_ID")
+        if not self.model_id:
+            missing.append("BEDROCK_MODEL_ID")
+        if missing:
+            raise ValueError(
+                "Missing required Bedrock configuration: "
+                + ", ".join(missing)
+                + ". Add them to your .env file. See .env.example."
             )
 
-        logging.info(f"Loading vector DB from {VECTOR_DB_PATH}...")
-        return FAISS.load_local(
-            VECTOR_DB_PATH,
-            self.embeddings,
-            allow_dangerous_deserialization=True
+        logging.info("Initializing RAG Service (Bedrock Knowledge Base)...")
+        self.agent_runtime = boto3.client("bedrock-agent-runtime", region_name=self.region)
+        self.runtime = boto3.client("bedrock-runtime", region_name=self.region)
+        logging.info(
+            "RAG Service initialized. region=%s knowledge_base_id=%s model_id=%s",
+            self.region,
+            self.knowledge_base_id,
+            self.model_id,
         )
 
-    def _create_rag_chain(self) -> Optional[RetrievalQA]:
-        retriever = self.vector_db.as_retriever(search_kwargs={"k": 5})
-        return RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=retriever,
-            return_source_documents=True
+    def _retrieve_docs(self, query: str) -> List[Dict[str, Any]]:
+        response = self.agent_runtime.retrieve(
+            knowledgeBaseId=self.knowledge_base_id,
+            retrievalQuery={"text": query},
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {
+                    "numberOfResults": RETRIEVE_RESULT_COUNT,
+                }
+            },
         )
+        return response.get("retrievalResults") or []
 
+    @staticmethod
+    def _source_from_result(result: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        location = result.get("location") or {}
+        s3_uri = (location.get("s3Location") or {}).get("uri")
+        metadata = result.get("metadata") or {}
+        source = s3_uri or metadata.get("x-amz-bedrock-kb-source-uri") or metadata.get("source")
+        title = metadata.get("title") or (source.split("/")[-1] if source else None)
+        http_url = s3_uri if s3_uri and s3_uri.startswith("http") else None
+        return {
+            "source": source,
+            "url": http_url,
+            "title": title,
+        }
 
+    @staticmethod
+    def _chunk_text(result: Dict[str, Any]) -> str:
+        content = result.get("content") or {}
+        return content.get("text") or ""
 
-    def _get_filtered_docs(self, query: str):
-        docs_and_scores = self.vector_db.similarity_search_with_score(query, k=10)
-
-        print("\n:mag: RAW RETRIEVAL RESULTS:")
-        for i, (doc, score) in enumerate(docs_and_scores):
-            print("hello")
-            print(f"\n--- Candidate {i+1} | Score: {score} ---")
-            print(doc.page_content[:500])
-            print("last line")
-            print("Metadata:", doc.metadata)
-
-        # For FAISS L2 distance, LOWER score is usually better
-        threshold = 1.0
-
-        filtered_docs = [
-            doc for doc, score in docs_and_scores
-            if score <= threshold
-        ]
-
-        top_docs = filtered_docs[:3]
-
-        print("\n:white_check_mark: FINAL CHUNKS SENT TO LLM:")
-        for i, doc in enumerate(top_docs):
-            print(f"\n--- Final Chunk {i+1} ---")
-            print(doc.page_content[:500])
-            print("Metadata:", doc.metadata)
-
-        return top_docs
-
-
-    def format_output(self, raw_user_answer):
-        """
-        Uses the LLM to reformat the raw answer into a simpler format.
-        """
-
-        prompts_for_formatting = (
-            "Take this raw_user_answer and organize it in an easy to read format "
-            "at a 6th grade level without emojis. Address the user directly and "
-            "do not use third person pronouns.\n\n"
-            f"raw_user_answer:\n{raw_user_answer}"
-        )
-
-        formatted_response = self.llm.invoke(prompts_for_formatting)
-
-        return formatted_response
-
-    def process_query(self, patient_history: str, conversation_history: List[str], query: str) -> Dict[str, Any]:
-        if not self.rag_chain:
-            return {"error": "RAG chain not initialized."}
-
-        formatted_history = "\n".join(
-            f"User: {turn['user_query']}\nAssistant: {turn['agent_response']}"
+    @staticmethod
+    def _format_conversation(conversation_history: List[Dict[str, Any]]) -> str:
+        if not conversation_history:
+            return "(none)"
+        return "\n".join(
+            f"User: {turn.get('user_query', '')}\nAssistant: {turn.get('agent_response', '')}"
             for turn in conversation_history
         )
-        structured_query = (
-            f"Static Patient History:\n{patient_history}\n\n"
-            f"Ongoing Conversation History:\n{formatted_history}\n\n"
-            f"Clinician's Latest Request:\n{query}\n\n"
-            f"Task:\nBased on all the information, provide a concise and clinically relevant answer."
+
+    def _build_prompt(
+        self,
+        patient_history: str,
+        conversation_history: List[Dict[str, Any]],
+        query: str,
+        docs: List[Dict[str, Any]],
+    ) -> str:
+        context_blocks = []
+        for i, result in enumerate(docs, start=1):
+            text = self._chunk_text(result).strip()
+            source = self._source_from_result(result)
+            label = source.get("title") or source.get("source") or f"chunk {i}"
+            context_blocks.append(f"[Source {i}: {label}]\n{text}")
+
+        context = "\n\n".join(context_blocks) if context_blocks else "(no library excerpts)"
+        history = (patient_history or "").strip() or "(not provided)"
+
+        return (
+            f"{GENERATION_INSTRUCTIONS}\n\n"
+            f"Medical library context:\n{context}\n\n"
+            f"Static patient history:\n{history}\n\n"
+            f"Ongoing conversation history:\n{self._format_conversation(conversation_history)}\n\n"
+            f"Clinician's latest request:\n{query}\n"
+        )
+
+    def _generate(self, prompt: str) -> str:
+        response = self.runtime.converse(
+            modelId=self.model_id,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": prompt}],
+                }
+            ],
+            inferenceConfig={
+                "maxTokens": 1024,
+                "temperature": 0.2,
+            },
+        )
+        parts = response.get("output", {}).get("message", {}).get("content") or []
+        texts = [part.get("text", "") for part in parts if part.get("text")]
+        return "\n".join(texts).strip()
+
+    def process_query(
+        self,
+        patient_history: str,
+        conversation_history: List[Dict[str, Any]],
+        query: str,
+    ) -> Dict[str, Any]:
+        history_bytes = (patient_history or "").encode("utf-8")
+        logging.info(
+            "Processing query. patient_history_chars=%s patient_history_sha256=%s conversation_turns=%s",
+            len(patient_history or ""),
+            hashlib.sha256(history_bytes).hexdigest()[:12],
+            len(conversation_history or []),
         )
 
         try:
-            logging.info("Invoking RAG chain...")
-            #raw_outputs = self.rag_chain.invoke({"query": structured_query})
-            docs = self._get_filtered_docs(structured_query)
+            docs = self._retrieve_docs(query)
+            usable_docs = [doc for doc in docs if self._chunk_text(doc).strip()]
+            logging.info("Bedrock Retrieve returned %s usable chunk(s).", len(usable_docs))
 
-            context = "\n\n".join([doc.page_content for doc in docs])
+            if not usable_docs:
+                return {"answer": NO_CONTEXT_ANSWER, "sources": []}
 
-            response = self.llm.invoke(
-                f"""
-            Use ONLY the context below to answer the user's question.
+            prompt = self._build_prompt(patient_history, conversation_history or [], query, usable_docs)
+            answer = self._generate(prompt)
+            sources = [self._source_from_result(doc) for doc in usable_docs]
 
-            Context:
-            {context}
+            seen = set()
+            unique_sources = []
+            for source in sources:
+                key = source.get("source") or source.get("title")
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique_sources.append(source)
 
-            Question:
-            {structured_query}
-            """
-            )
-
-            return {
-                "answer": response,
-                "debug_chunks": [
-                    {
-                        "content": doc.page_content,
-                        "source": doc.metadata.get("source"),
-                        "page": doc.metadata.get("page")
-                    }
-                    for doc in docs
-                ]
-            }
-
-
-
-
-
-            sources = []
-            for doc in raw_outputs.get("source_documents", []):
-                meta = doc.metadata
-                sources.append({
-                    "source": meta.get("source"),
-                    "url": meta.get("url"),
-                    "title": meta.get("title", meta.get("doc_id"))
-                })
-
-            raw_answer = raw_outputs.get("result", "")
-            formatted_answer = self.format_output(raw_answer)
-
-            return {
-                "answer": formatted_answer,
-                "sources": sources
-            }
-
-        except Exception as e:
-            logging.error(f"RAG chain invocation failed: {e}")
-            return {"error": f"Failed to process query: {e}"}
+            return {"answer": answer, "sources": unique_sources}
+        except (ClientError, BotoCoreError) as exc:
+            logging.error("Bedrock RAG invocation failed: %s", exc)
+            return {"error": f"Failed to process query: {exc}"}
+        except Exception as exc:
+            logging.error("RAG query failed: %s", exc)
+            return {"error": f"Failed to process query: {exc}"}

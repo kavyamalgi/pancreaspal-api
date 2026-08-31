@@ -1,25 +1,59 @@
 # PancreasPal API
 
-PancreasPal is an AI-powered clinical support assistant for newly diagnosed Type 1 diabetes patients and healthcare professionals. It combines patient-specific PDF history uploads, conversation memory, and Retrieval-Augmented Generation (RAG) with trusted clinical sources.
+PancreasPal is an AI-powered clinical support assistant for newly diagnosed Type 1 diabetes patients and healthcare professionals. It combines patient-specific PDF history uploads, conversation memory, and Retrieval-Augmented Generation (RAG) against trusted clinical sources stored in an Amazon Bedrock Knowledge Base.
 
 ## Project Structure
 
 - `main.py` - FastAPI backend application entry point
-- `build_db.py` - Builds local FAISS vector database from `Gold_Standard.zip`
-- `rag_service.py` - RAG service using LangChain, FAISS, and Anthropic Claude
-- `patient_service.py` - PDF ingestion, patient history storage, and conversation memory
+- `ingest_knowledge_base.py` - Uploads `Gold_Standard.zip` PDFs to S3 and starts a Bedrock Knowledge Base ingestion job
+- `rag_service.py` - Retrieves from the Bedrock Knowledge Base and generates answers with Claude on Bedrock
+- `patient_service.py` - PDF ingestion, local patient history files, and DynamoDB conversation memory
+- `create_conversation_table.py` - Creates the DynamoDB table used for chat turns
 - `requirements.txt` - Backend Python dependencies
+- `.env.example` - Required AWS / Bedrock / DynamoDB environment variable names
 - `pancreaspal-ui/` - React frontend application
 - `patient_files/` - Generated patient history text files
-- `faiss_diseases_db/` - Built FAISS vector database
-- `gold_standard_docs/` - Extracted medical source documents
+- `gold_standard_docs/` - Local unzip of `Gold_Standard.zip` used only as the ingest upload source
 
 ## Requirements
 
 - Python 3.12
 - Node.js 16+ (for frontend)
 - npm or yarn
-- Anthropic API key stored in `ANTHROPIC_API_KEY`
+- An AWS account with Amazon Bedrock access
+- AWS credentials available to boto3 (environment variables, `AWS_PROFILE`, or `~/.aws/credentials`)
+
+## AWS one-time setup
+
+Do this in the AWS console before running ingest or the API.
+
+1. Choose a region (for example `us-east-1`).
+2. In Amazon Bedrock, enable model access for:
+   - Embeddings: Amazon Titan Text Embeddings V2 (`amazon.titan-embed-text-v2:0`)
+   - Generation: Claude Sonnet 4.5 (copy the model or inference-profile ID from the console)
+3. Create a private S3 bucket (block public access), for example `pancreaspal-gold-standard`.
+4. Create a Bedrock Knowledge Base:
+   - Data source: an S3 prefix such as `s3://pancreaspal-gold-standard/gold-standard/`
+   - Embeddings: Titan Text Embeddings V2
+   - Vector store: S3 Vectors (recommended for a small/dev corpus)
+   - Chunking: default semantic or fixed chunking
+5. Grant the IAM principal that runs this app permission to:
+   - `bedrock:Retrieve`
+   - `bedrock:InvokeModel` (and Converse)
+   - `s3:PutObject` / `s3:GetObject` on the gold-standard prefix (ingest script)
+   - `bedrock:StartIngestionJob` and `bedrock:GetIngestionJob` (ingest script)
+   - `dynamodb:Query` and `dynamodb:PutItem` on the conversation table
+   - `dynamodb:CreateTable` and `dynamodb:DescribeTable` if you use `create_conversation_table.py`
+6. Copy the Knowledge Base ID, data source ID, S3 URI, region, Claude model ID, and DynamoDB table name into `.env`.
+7. Create the chat-memory table (once per account/region):
+
+```bash
+python create_conversation_table.py
+```
+
+The table uses on-demand billing, partition key `patient_id`, and sort key `turn_id`. Chat history then survives API restarts. Patient PDFs stay in `patient_files/`.
+
+Retrieval quality will differ from the old local PubMedBERT + FAISS index. Re-test a few clinical questions after the first ingest.
 
 ## Backend Setup
 
@@ -47,33 +81,37 @@ pip install -r requirements.txt
 
 ### 3. Configure environment variables
 
-Create a `.env` file in the repository root with:
+Copy `.env.example` to `.env` in the repository root and fill in:
 
 ```env
-ANTHROPIC_API_KEY=your-anthropic-api-key-here
+AWS_REGION=us-east-1
+BEDROCK_KNOWLEDGE_BASE_ID=
+BEDROCK_DATA_SOURCE_ID=
+BEDROCK_S3_URI=s3://pancreaspal-gold-standard/gold-standard/
+BEDROCK_MODEL_ID=
+DYNAMODB_CONVERSATION_TABLE=pancreaspal-conversations
 ```
+
+Do not commit `.env`. boto3 uses the default AWS credential chain.
 
 ### 4. Prepare the medical source data
 
-The backend uses a local FAISS database built from `Gold_Standard.zip`.
-
 Place `Gold_Standard.zip` in the repository root if it is not already present.
 
-### 5. Build the FAISS vector database
+### 5. Ingest documents into the Knowledge Base
 
 ```bash
-python build_db.py
+python ingest_knowledge_base.py
 ```
 
 This script will:
 
 - unzip `Gold_Standard.zip` into `gold_standard_docs/`
-- read each PDF file
-- split document text into chunks
-- generate embeddings using `NeuML/pubmedbert-base-embeddings`
-- save the FAISS database to `faiss_diseases_db/`
+- upload each PDF to `BEDROCK_S3_URI`
+- start a Bedrock Knowledge Base ingestion job
+- wait until the job completes
 
-> If `faiss_diseases_db/` already exists and is valid, you can skip this step.
+Re-run this script whenever the Gold Standard PDFs change. The Knowledge Base itself is created once in the AWS console.
 
 ## Running the Backend
 
@@ -86,6 +124,8 @@ python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 The backend will be available at:
 
 `http://127.0.0.1:8000`
+
+Startup fails if `BEDROCK_KNOWLEDGE_BASE_ID`, `BEDROCK_MODEL_ID`, or `DYNAMODB_CONVERSATION_TABLE` is missing. A local FAISS folder is not required.
 
 ## Frontend Setup
 
@@ -117,21 +157,19 @@ The UI will usually run at `http://localhost:3000`.
 
 ## Quick Setup
 
-If you need to remake the `faiss_dieases_db` database:
+If the Gold Standard documents changed, re-ingest:
 
 ```bash
-python3 build_db.py
+python ingest_knowledge_base.py
 ```
 
-If you have already set up the database and configured the local environment, run these commands in a terminal to quickly setup the website:
-
-This starts the backend:
+If the Knowledge Base is already ingested and `.env` is configured, start the backend:
 
 ```bash
 python3 -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open a new terminal while keeping the old one running, then run these in the new terminal:
+Open a new terminal while keeping the old one running, then:
 
 ```bash
 cd pancreaspal-ui
@@ -205,24 +243,27 @@ Response example:
 {
   "answer": "...",
   "sources": [
-    { "source": "...", "url": null, "title": "..." }
+    { "source": "s3://bucket/gold-standard/doc.pdf", "url": null, "title": "doc.pdf" }
   ]
 }
 ```
 
 ## How it works
 
-1. Upload a patient PDF.
-2. The backend extracts text and saves it to `patient_files/<patient_id>.txt`.
-3. The RAG service loads the FAISS vector store from `faiss_diseases_db/`.
-4. A query combines patient history, conversation memory, and retrieved medical context.
-5. Anthropic Claude generates the final answer.
+1. Upload a patient PDF. The backend extracts text and saves it to `patient_files/<patient_id>.txt`.
+2. A query searches the Bedrock Knowledge Base with the clinician's question only (Gold Standard docs, not the patient chart).
+3. Retrieved library excerpts, local patient history, and the last 20 DynamoDB chat turns are sent to Claude on Bedrock.
+4. After a successful answer, the new turn is written to DynamoDB.
+5. The API returns the answer plus source citations for the UI.
+
+Patient PDFs stay on this machine. They are not written to the Knowledge Base or DynamoDB. Chat turns persist across API restarts.
 
 ## Notes and Troubleshooting
 
-- `ANTHROPIC_API_KEY` must be present in `.env` before starting the backend.
-- `faiss_diseases_db/` must exist before starting the API, or `main.py` will fail.
-- If `build_db.py` cannot find `Gold_Standard.zip`, place it in the repository root.
+- `BEDROCK_KNOWLEDGE_BASE_ID`, `BEDROCK_MODEL_ID`, and `DYNAMODB_CONVERSATION_TABLE` must be present in `.env` before starting the backend.
+- Create the conversation table with `python create_conversation_table.py` before the first query.
+- Enable Bedrock model access in the same region as `AWS_REGION`.
+- If `ingest_knowledge_base.py` cannot find `Gold_Standard.zip`, place it in the repository root.
 - Check CORS settings in `main.py` if the frontend cannot connect.
 
 ## Quick test
@@ -239,17 +280,22 @@ Expected output:
 {"status":"Medical RAG API is running."}
 ```
 
+You can also run:
+
+```bash
+python test_claude.py
+```
+
 ## Development notes
 
-- Backend: `FastAPI`, `LangChain`, `FAISS`, `Anthropic Claude`
-- Embeddings model: `NeuML/pubmedbert-base-embeddings`
+- Backend: `FastAPI`, Amazon Bedrock Knowledge Bases, Claude on Bedrock, DynamoDB chat memory
+- Embeddings: Amazon Titan Text Embeddings V2 (configured on the Knowledge Base)
 - Frontend: React + Vite + Tailwind CSS
 
 ## Useful directories
 
 - `patient_files/` - saved patient text history
-- `faiss_diseases_db/` - stored vector DB used by RAG
-- `gold_standard_docs/` - extracted PDFs from `Gold_Standard.zip`
+- `gold_standard_docs/` - extracted PDFs from `Gold_Standard.zip` (ingest source only)
 - `pancreaspal-ui/` - frontend application
 
 ---
@@ -257,7 +303,3 @@ Expected output:
 ## License
 
 This project is provided without an explicit license. Add a license file if you plan to share or distribute it.
-
-## front end
-'cd pancreaspal-ui/'
-'npm run dev'

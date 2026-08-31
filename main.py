@@ -102,18 +102,14 @@ async def append_to_history(patient_id: str, request: AppendHistoryRequest):
         "info": "The patient's history has been successfully updated."
     }
 
-@app.post("/api/v1/patients/{patient_id}/query")
+@app.post("/api/v1/patients/{patient_id}/query", response_model=RAGQueryResponse)
 async def query_patient_agent(patient_id: str, request: PatientQueryRequest):
-    """Query patient agent"""
+    """Query patient agent using Bedrock Knowledge Base retrieval and Claude."""
     patient_history = patient_service.get_patient_history_text(patient_id)
     if patient_history is None:
         raise HTTPException(status_code=404, detail=f"Patient with ID '{patient_id}' not found.")
 
     conversation_history = patient_service.get_conversation_history(patient_id)
-
-    #print(patient_history)
-    #print(conversation_history)
-    #print(request.query)
 
     result = rag_service.process_query(
         patient_history=patient_history,

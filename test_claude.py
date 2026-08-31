@@ -6,9 +6,14 @@ load_dotenv()
 rag = RAGService()
 
 response = rag.process_query(
-    patient_history="Patient is a 45-year-old with type 2 diabetes.",
-    conversation_history=["Patient reports feeling shaky and sweaty."],
-    query="What could these symptoms indicate?"
+    patient_history="Patient is a 45-year-old with type 1 diabetes.",
+    conversation_history=[
+        {
+            "user_query": "Patient reports feeling shaky and sweaty.",
+            "agent_response": "Those symptoms can be related to low blood sugar. I can look that up against the medical library.",
+        }
+    ],
+    query="What could these symptoms indicate?",
 )
 
 print(response)

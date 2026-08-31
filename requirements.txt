@@ -4,11 +4,6 @@ uvicorn[standard]
 python-dotenv
 python-multipart
 
-# AI + RAG
-langchain==0.3.27
-langchain-community==0.3.27
-langchain-anthropic==0.3.20
-faiss-cpu==1.12.0
-sentence-transformers
+# AWS + RAG
+boto3
 pypdf
-requests

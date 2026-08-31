@@ -1,18 +1,44 @@
 from datetime import datetime
-import os
-import pypdf
 import io
+import logging
+import os
+import uuid
 from pathlib import Path
+
+import boto3
+from boto3.dynamodb.conditions import Key
+import pypdf
 
 # --- Configuration ---
 PATIENT_FILES_DIR = Path("patient_files")
 PATIENT_FILES_DIR.mkdir(exist_ok=True)
 
-# In-memory "database" for conversation histories
-conversation_histories = {}
+MAX_CONVERSATION_TURNS = 20
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class PatientService:
+    def __init__(self, table=None):
+        if table is not None:
+            self._table = table
+            return
+
+        table_name = os.getenv("DYNAMODB_CONVERSATION_TABLE", "").strip()
+        if not table_name:
+            raise ValueError(
+                "DYNAMODB_CONVERSATION_TABLE is not set. Add it to your .env file. See .env.example."
+            )
+
+        region = os.getenv("AWS_REGION", "us-east-1")
+        dynamodb = boto3.resource("dynamodb", region_name=region)
+        self._table = dynamodb.Table(table_name)
+        logging.info(
+            "PatientService using DynamoDB table %s in region %s",
+            table_name,
+            region,
+        )
+
     def save_pdf_as_text(self, patient_id: str, file_content: bytes) -> bool:
         """Extracts text from an uploaded PDF and saves it as a .txt file."""
         try:
@@ -48,17 +74,36 @@ class PatientService:
             f.write(f"\n\n--- Appended Note ---\n{new_text}")
         return True
 
-    def get_conversation_history(self, patient_id: str):
-        """Retrieve conversation history for a patient"""
-        return conversation_histories.get(patient_id, [])
+    def get_conversation_history(self, patient_id: str) -> list[dict]:
+        """Retrieve the most recent conversation turns for a patient from DynamoDB."""
+        response = self._table.query(
+            KeyConditionExpression=Key("patient_id").eq(patient_id),
+            ScanIndexForward=False,
+            Limit=MAX_CONVERSATION_TURNS,
+        )
+        items = list(reversed(response.get("Items") or []))
+        turns = [
+            {
+                "user_query": item.get("user_query", ""),
+                "agent_response": item.get("agent_response", ""),
+                "timestamp": item.get("timestamp", ""),
+            }
+            for item in items
+        ]
+        logging.info("Loaded %s conversation turn(s) for patient %s", len(turns), patient_id)
+        return turns
 
-    def add_to_conversation_history(self, patient_id: str, user_query: str, agent_response: str):
-        """Add a message pair to the conversation history"""
-        if patient_id not in conversation_histories:
-            conversation_histories[patient_id] = []
-        
-        conversation_histories[patient_id].append({
-            "user_query": user_query,
-            "agent_response": agent_response,
-            "timestamp": datetime.now().isoformat()
-        })
+    def add_to_conversation_history(self, patient_id: str, user_query: str, agent_response: str) -> None:
+        """Persist a user/assistant turn in DynamoDB."""
+        timestamp = datetime.now().isoformat()
+        turn_id = f"TURN#{timestamp}#{uuid.uuid4()}"
+        self._table.put_item(
+            Item={
+                "patient_id": patient_id,
+                "turn_id": turn_id,
+                "user_query": user_query,
+                "agent_response": agent_response,
+                "timestamp": timestamp,
+            }
+        )
+        logging.info("Stored conversation turn for patient %s", patient_id)
