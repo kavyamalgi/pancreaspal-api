@@ -56,7 +56,7 @@ class RAGService:
             knowledgeBaseId=self.knowledge_base_id,
             retrievalQuery={"text": query},
             retrievalConfiguration={
-                "vectorSearchConfiguration": {
+                "managedSearchConfiguration": {
                     "numberOfResults": RETRIEVE_RESULT_COUNT,
                 }
             },
