@@ -7,19 +7,44 @@ from pathlib import Path
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 import pypdf
 
 # --- Configuration ---
 PATIENT_FILES_DIR = Path("patient_files")
-PATIENT_FILES_DIR.mkdir(exist_ok=True)
-
 MAX_CONVERSATION_TURNS = 20
+DEFAULT_S3_PREFIX = "patients/"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
+def _normalize_prefix(prefix: str) -> str:
+    value = (prefix or DEFAULT_S3_PREFIX).strip()
+    if not value.endswith("/"):
+        value = f"{value}/"
+    return value
+
+
 class PatientService:
-    def __init__(self, table=None):
+    def __init__(self, table=None, s3_client=None):
+        region = os.getenv("AWS_REGION", "us-east-1")
+        self._bucket = os.getenv("PATIENT_FILES_S3_BUCKET", "").strip()
+        self._prefix = _normalize_prefix(os.getenv("PATIENT_FILES_S3_PREFIX", DEFAULT_S3_PREFIX))
+
+        if s3_client is not None:
+            self._s3 = s3_client
+        elif self._bucket:
+            self._s3 = boto3.client("s3", region_name=region)
+            logging.info(
+                "Patient files stored in s3://%s/%s",
+                self._bucket,
+                self._prefix,
+            )
+        else:
+            self._s3 = None
+            PATIENT_FILES_DIR.mkdir(exist_ok=True)
+            logging.info("Patient files stored locally in %s", PATIENT_FILES_DIR)
+
         if table is not None:
             self._table = table
             return
@@ -30,7 +55,6 @@ class PatientService:
                 "DYNAMODB_CONVERSATION_TABLE is not set. Add it to your .env file. See .env.example."
             )
 
-        region = os.getenv("AWS_REGION", "us-east-1")
         dynamodb = boto3.resource("dynamodb", region_name=region)
         self._table = dynamodb.Table(table_name)
         logging.info(
@@ -39,39 +63,76 @@ class PatientService:
             region,
         )
 
+    def _uses_s3(self) -> bool:
+        return bool(self._s3 and self._bucket)
+
+    def _object_key(self, patient_id: str) -> str:
+        return f"{self._prefix}{patient_id}.txt"
+
+    def _local_path(self, patient_id: str) -> Path:
+        return PATIENT_FILES_DIR / f"{patient_id}.txt"
+
+    def _write_history(self, patient_id: str, text: str) -> None:
+        if self._uses_s3():
+            self._s3.put_object(
+                Bucket=self._bucket,
+                Key=self._object_key(patient_id),
+                Body=text.encode("utf-8"),
+                ContentType="text/plain; charset=utf-8",
+            )
+            return
+        path = self._local_path(patient_id)
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def _extract_pdf_text(file_content: bytes) -> str:
+        reader = pypdf.PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text
+
     def save_pdf_as_text(self, patient_id: str, file_content: bytes) -> bool:
         """Extracts text from an uploaded PDF and saves it as a .txt file."""
         try:
-            reader = pypdf.PdfReader(io.BytesIO(file_content))
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-
-            file_path = PATIENT_FILES_DIR / f"{patient_id}.txt"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(text)
-            print(f"Successfully processed PDF for patient {patient_id}, text length: {len(text)}")
+            text = self._extract_pdf_text(file_content)
+            self._write_history(patient_id, text)
+            logging.info(
+                "Successfully processed PDF for patient %s, text length: %s",
+                patient_id,
+                len(text),
+            )
             return True
         except Exception as e:
-            print(f"Failed to process PDF for patient {patient_id}: {e}")
+            logging.error("Failed to process PDF for patient %s: %s", patient_id, e)
             return False
 
     def get_patient_history_text(self, patient_id: str) -> str | None:
         """Reads the full text history from a patient's .txt file."""
-        file_path = PATIENT_FILES_DIR / f"{patient_id}.txt"
+        if self._uses_s3():
+            try:
+                response = self._s3.get_object(
+                    Bucket=self._bucket,
+                    Key=self._object_key(patient_id),
+                )
+                return response["Body"].read().decode("utf-8")
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+                    return None
+                raise
+
+        file_path = self._local_path(patient_id)
         if not file_path.exists():
             return None
-
         return file_path.read_text(encoding="utf-8")
 
     def append_to_patient_history(self, patient_id: str, new_text: str) -> bool:
         """Appends a new note to the patient's history .txt file."""
-        file_path = PATIENT_FILES_DIR / f"{patient_id}.txt"
-        if not file_path.exists():
+        existing = self.get_patient_history_text(patient_id)
+        if existing is None:
             return False
-
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(f"\n\n--- Appended Note ---\n{new_text}")
+        self._write_history(patient_id, f"{existing}\n\n--- Appended Note ---\n{new_text}")
         return True
 
     def get_conversation_history(self, patient_id: str) -> list[dict]:

@@ -1,13 +1,26 @@
+import os
+import uuid
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
-import uuid
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from rag_service import RAGService
 from patient_service import PatientService
+
+
+def _cors_origins() -> list[str]:
+    origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    extra = os.getenv("CORS_ORIGINS", "")
+    for part in extra.split(","):
+        origin = part.strip().rstrip("/")
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins
+
 
 # Initialize the FastAPI app and services
 app = FastAPI(
@@ -18,11 +31,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",      # Development
-        "http://localhost:8000",      # Vite dev server
-        "https://yourdomain.com",     # Production domain
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

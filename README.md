@@ -7,7 +7,8 @@ PancreasPal is an AI-powered clinical support assistant for newly diagnosed Type
 - `main.py` - FastAPI backend application entry point
 - `ingest_knowledge_base.py` - Uploads `Gold_Standard.zip` PDFs to S3 and starts a Bedrock Knowledge Base ingestion job
 - `rag_service.py` - Retrieves from the Bedrock Knowledge Base and generates answers with Claude on Bedrock
-- `patient_service.py` - PDF ingestion, local patient history files, and DynamoDB conversation memory
+- `patient_service.py` - PDF ingestion, patient text on disk or S3, DynamoDB conversation memory
+- `Dockerfile` - Image for AWS App Runner
 - `create_conversation_table.py` - Creates the DynamoDB table used for chat turns
 - `requirements.txt` - Backend Python dependencies
 - `.env.example` - Required AWS / Bedrock / DynamoDB environment variable names
@@ -31,7 +32,7 @@ Do this in the AWS console before running ingest or the API.
 2. In Amazon Bedrock, enable model access for:
    - Embeddings: Amazon Titan Text Embeddings V2 (`amazon.titan-embed-text-v2:0`)
    - Generation: Claude Sonnet 4.5 (copy the model or inference-profile ID from the console)
-3. Create a private S3 bucket (block public access), for example `pancreaspal-gold-standard`.
+3. Create a private S3 bucket, for example `pancreaspal-gold-standard`.
 4. Create a Bedrock Knowledge Base:
    - Data source: an S3 prefix such as `s3://pancreaspal-gold-standard/gold-standard/`
    - Embeddings: Titan Text Embeddings V2
@@ -50,10 +51,6 @@ Do this in the AWS console before running ingest or the API.
 ```bash
 python create_conversation_table.py
 ```
-
-The table uses on-demand billing, partition key `patient_id`, and sort key `turn_id`. Chat history then survives API restarts. Patient PDFs stay in `patient_files/`.
-
-Retrieval quality will differ from the old local PubMedBERT + FAISS index. Re-test a few clinical questions after the first ingest.
 
 ## Backend Setup
 
@@ -90,6 +87,13 @@ BEDROCK_DATA_SOURCE_ID=
 BEDROCK_S3_URI=s3://pancreaspal-gold-standard/gold-standard/
 BEDROCK_MODEL_ID=
 DYNAMODB_CONVERSATION_TABLE=pancreaspal-conversations
+```
+
+Optional for local S3 patient files (required on App Runner):
+
+```env
+PATIENT_FILES_S3_BUCKET=
+CORS_ORIGINS=
 ```
 
 Do not commit `.env`. boto3 uses the default AWS credential chain.
@@ -250,13 +254,63 @@ Response example:
 
 ## How it works
 
-1. Upload a patient PDF. The backend extracts text and saves it to `patient_files/<patient_id>.txt`.
+1. Upload a patient PDF. The backend extracts text and saves it to `patient_files/<patient_id>.txt` locally, or to S3 when `PATIENT_FILES_S3_BUCKET` is set.
 2. A query searches the Bedrock Knowledge Base with the clinician's question only (Gold Standard docs, not the patient chart).
-3. Retrieved library excerpts, local patient history, and the last 20 DynamoDB chat turns are sent to Claude on Bedrock.
+3. Retrieved library excerpts, patient history, and the last 20 DynamoDB chat turns are sent to Claude on Bedrock.
 4. After a successful answer, the new turn is written to DynamoDB.
 5. The API returns the answer plus source citations for the UI.
 
-Patient PDFs stay on this machine. They are not written to the Knowledge Base or DynamoDB. Chat turns persist across API restarts.
+Patient charts are not written to the Knowledge Base. Chat turns persist in DynamoDB. On App Runner, patient text must live in S3.
+
+## Deploy on AWS (App Runner + Amplify)
+
+Teammates only need the Amplify URL. They do not create a Knowledge Base or configure AWS.
+
+These resources are already in account `402561607513` / `us-east-1`:
+
+- Patient text bucket: `pancreaspal-patient-files-402561607513`
+- App Runner instance role: `pancreaspal-apprunner-instance`
+- App Runner ECR pull role: `pancreaspal-apprunner-ecr-access`
+- ECR repo: `402561607513.dkr.ecr.us-east-1.amazonaws.com/pancreaspal-api`
+- Amplify app: `d3cmc7tgu7fkco` (domain `d3cmc7tgu7fkco.amplifyapp.com`, branch `main`)
+
+### 1. Push the API image (needs Docker Desktop)
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then from the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/create-apprunner-service.ps1
+```
+
+The script reads `.env` (KB id, model id, table name), builds the `Dockerfile`, pushes to ECR, and creates or updates App Runner service `pancreaspal-api` on port 8080. It sets `PATIENT_FILES_S3_BUCKET` to the patient bucket above.
+
+Copy the printed App Runner URL (`https://xxxx.us-east-1.awsapprunner.com`).
+
+### 2. Host the UI on Amplify
+
+In the Amplify console, open app `pancreaspal-ui` and connect GitHub repo `pancreaspal-api` (app root `pancreaspal-ui`, build from [`amplify.yml`](amplify.yml)). Set the build environment variable:
+
+```text
+VITE_API_URL=https://<apprunner-url>
+```
+
+No trailing slash. Redeploy so Vite bakes in the API URL.
+
+The teammate URL is typically `https://main.d3cmc7tgu7fkco.amplifyapp.com`.
+
+### 3. CORS
+
+On the App Runner service, set:
+
+```text
+CORS_ORIGINS=https://main.d3cmc7tgu7fkco.amplifyapp.com
+```
+
+`http://localhost:3000` is always allowed in code. Update `.env` `CORS_ORIGINS` the same way, then re-run the deploy script so the service picks it up.
+
+`BEDROCK_DATA_SOURCE_ID` and `BEDROCK_S3_URI` are only needed for `ingest_knowledge_base.py` on a laptop, not on App Runner.
+
+The public Amplify URL has no login. Share it only with teammates; do not upload real PHI.
 
 ## Notes and Troubleshooting
 
@@ -264,7 +318,7 @@ Patient PDFs stay on this machine. They are not written to the Knowledge Base or
 - Create the conversation table with `python create_conversation_table.py` before the first query.
 - Enable Bedrock model access in the same region as `AWS_REGION`.
 - If `ingest_knowledge_base.py` cannot find `Gold_Standard.zip`, place it in the repository root.
-- Check CORS settings in `main.py` if the frontend cannot connect.
+- Check `CORS_ORIGINS` if the hosted frontend cannot call the API.
 
 ## Quick test
 

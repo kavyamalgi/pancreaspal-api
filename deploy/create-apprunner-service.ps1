@@ -1,0 +1,117 @@
+# Builds, pushes, and creates/updates the App Runner API service.
+# Requires Docker Desktop and AWS CLI. Loads repo-root .env (do not print it).
+#
+# Usage (from repo root, venv optional):
+#   powershell -ExecutionPolicy Bypass -File deploy/create-apprunner-service.ps1
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Error "Docker is not installed or not on PATH. Install Docker Desktop, restart the terminal, then re-run this script."
+}
+
+$Region = "us-east-1"
+$Account = "402561607513"
+$Repo = "pancreaspal-api"
+$ImageUri = "$Account.dkr.ecr.$Region.amazonaws.com/${Repo}:latest"
+$ServiceName = "pancreaspal-api"
+$Bucket = "pancreaspal-patient-files-$Account"
+$InstanceRole = "arn:aws:iam::${Account}:role/pancreaspal-apprunner-instance"
+$AccessRole = "arn:aws:iam::${Account}:role/pancreaspal-apprunner-ecr-access"
+
+$EnvFile = Join-Path $Root ".env"
+if (-not (Test-Path $EnvFile)) {
+    Write-Error "Missing .env in repo root."
+}
+
+$EnvMap = @{}
+Get-Content $EnvFile | ForEach-Object {
+    $line = $_.Trim()
+    if (-not $line -or $line.StartsWith("#")) { return }
+    $idx = $line.IndexOf("=")
+    if ($idx -lt 1) { return }
+    $EnvMap[$line.Substring(0, $idx).Trim()] = $line.Substring($idx + 1).Trim()
+}
+
+function Need([string]$key) {
+    if (-not $EnvMap.ContainsKey($key) -or -not $EnvMap[$key]) {
+        Write-Error "Set $key in .env"
+    }
+    return $EnvMap[$key]
+}
+
+$Kb = Need "BEDROCK_KNOWLEDGE_BASE_ID"
+$Model = Need "BEDROCK_MODEL_ID"
+$Table = Need "DYNAMODB_CONVERSATION_TABLE"
+$Cors = $EnvMap["CORS_ORIGINS"]
+if (-not $Cors) { $Cors = "http://localhost:3000" }
+
+Write-Host "Logging in to ECR..."
+aws ecr get-login-password --region $Region | docker login --username AWS --password-stdin "$Account.dkr.ecr.$Region.amazonaws.com"
+
+Write-Host "Building image..."
+docker build -t "${Repo}:latest" .
+docker tag "${Repo}:latest" $ImageUri
+docker push $ImageUri
+
+$RuntimeEnv = @{
+    AWS_REGION                    = $Region
+    BEDROCK_KNOWLEDGE_BASE_ID     = $Kb
+    BEDROCK_MODEL_ID              = $Model
+    DYNAMODB_CONVERSATION_TABLE   = $Table
+    PATIENT_FILES_S3_BUCKET       = $Bucket
+    CORS_ORIGINS                  = $Cors
+}
+
+$SourceObj = @{
+    AuthenticationConfiguration = @{ AccessRoleArn = $AccessRole }
+    AutoDeploymentsEnabled      = $true
+    ImageRepository             = @{
+        ImageIdentifier     = $ImageUri
+        ImageRepositoryType = "ECR"
+        ImageConfiguration  = @{
+            Port                         = "8080"
+            RuntimeEnvironmentVariables  = $RuntimeEnv
+        }
+    }
+}
+
+$InstanceObj = @{
+    Cpu             = "1 vCPU"
+    Memory          = "2 GB"
+    InstanceRoleArn = $InstanceRole
+}
+
+$HealthObj = @{
+    Protocol            = "HTTP"
+    Path                = "/"
+    Interval            = 10
+    Timeout             = 5
+    HealthyThreshold    = 1
+    UnhealthyThreshold  = 5
+}
+
+function Write-JsonFile($obj, $path) {
+    $json = $obj | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText($path, $json)
+}
+
+$sourceFile = Join-Path $env:TEMP "pancreaspal-apprunner-source.json"
+$instanceFile = Join-Path $env:TEMP "pancreaspal-apprunner-instance.json"
+$healthFile = Join-Path $env:TEMP "pancreaspal-apprunner-health.json"
+Write-JsonFile $SourceObj $sourceFile
+Write-JsonFile $InstanceObj $instanceFile
+Write-JsonFile $HealthObj $healthFile
+
+$existing = aws apprunner list-services --region $Region --query "ServiceSummaryList[?ServiceName=='$ServiceName'].ServiceArn" --output text
+if ($existing) {
+    Write-Host "Updating App Runner service..."
+    aws apprunner update-service --region $Region --service-arn $existing --source-configuration "file://$sourceFile" --instance-configuration "file://$instanceFile" | Out-Null
+    Write-Host "Updated $existing"
+} else {
+    Write-Host "Creating App Runner service (this can take several minutes)..."
+    $out = aws apprunner create-service --region $Region --service-name $ServiceName --source-configuration "file://$sourceFile" --instance-configuration "file://$instanceFile" --health-check-configuration "file://$healthFile" | ConvertFrom-Json
+    Write-Host "Service URL: https://$($out.Service.ServiceUrl)"
+}

@@ -20,6 +20,8 @@ GENERATION_INSTRUCTIONS = (
     "does not contain the answer, say so. Organize the response in an easy-to-read format at a "
     "6th grade reading level without emojis. Address the user directly. Do not use third-person "
     "pronouns for the user. Do not invent sources or clinical facts that are not in the context."
+    "Express your answers in an educational format and only give suggestions, and word it as"
+    "lifestyle advice and not medical."
 )
 
 
@@ -61,7 +63,33 @@ class RAGService:
                 }
             },
         )
-        return response.get("retrievalResults") or []
+        results = response.get("retrievalResults") or []
+        self._print_retrieved_chunks(query, results)
+        return results
+
+    def _print_retrieved_chunks(self, query: str, results: List[Dict[str, Any]]) -> None:
+        print("\n========== Bedrock Retrieve ==========", flush=True)
+        print(f"Query: {query}", flush=True)
+        print(f"Chunks: {len(results)}", flush=True)
+        if not results:
+            print("(no chunks returned)", flush=True)
+            print("======================================\n", flush=True)
+            return
+
+        for i, result in enumerate(results, start=1):
+            source = self._source_from_result(result)
+            label = source.get("title") or source.get("source") or "(unknown source)"
+            score = result.get("score")
+            text = self._chunk_text(result).strip()
+            print(f"\n--- Chunk {i} ---", flush=True)
+            print(f"Source: {label}", flush=True)
+            if source.get("source") and source.get("source") != label:
+                print(f"URI: {source['source']}", flush=True)
+            if score is not None:
+                print(f"Score: {score}", flush=True)
+            print(f"Text:\n{text}", flush=True)
+
+        print("======================================\n", flush=True)
 
     @staticmethod
     def _source_from_result(result: Dict[str, Any]) -> Dict[str, Optional[str]]:
